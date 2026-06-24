@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yahtzee — Year 5 Probability Edition</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", Arial, sans-serif; }
+  @keyframes dieRoll {
+    0%   { transform: rotate(0deg) scale(1); }
+    25%  { transform: rotate(-14deg) scale(1.08); }
+    65%  { transform: rotate(10deg) scale(0.94); }
+    100% { transform: rotate(0deg) scale(1); }
+  }
+  input:focus { outline: none; box-shadow: 0 0 0 2px #1B433244; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #1B4332; }
+  ::-webkit-scrollbar-thumb { background: #2D6A4F; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useEffect, useRef } = React;
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const DOTS = {
+  1:[0,0,0,0,1,0,0,0,0], 2:[1,0,0,0,0,0,0,0,1], 3:[1,0,0,0,1,0,0,0,1],
+  4:[1,0,1,0,0,0,1,0,1], 5:[1,0,1,0,1,0,1,0,1], 6:[1,0,1,1,0,1,1,0,1],
+};
+
+const UPPER_CATS = [
+  { key:'ones',   label:'Ones',   desc:'Sum of all 1s' },
+  { key:'twos',   label:'Twos',   desc:'Sum of all 2s' },
+  { key:'threes', label:'Threes', desc:'Sum of all 3s' },
+  { key:'fours',  label:'Fours',  desc:'Sum of all 4s' },
+  { key:'fives',  label:'Fives',  desc:'Sum of all 5s' },
+  { key:'sixes',  label:'Sixes',  desc:'Sum of all 6s' },
+];
+const LOWER_CATS = [
+  { key:'threeoak',    label:'3 of a Kind',    desc:'3 same → sum all dice' },
+  { key:'fouroak',     label:'4 of a Kind',    desc:'4 same → sum all dice' },
+  { key:'fullhouse',   label:'Full House',     desc:'3+2 same → 25 pts' },
+  { key:'sstraight',   label:'Sm. Straight',   desc:'4 in row → 30 pts' },
+  { key:'lstraight',   label:'Lg. Straight',   desc:'5 in row → 40 pts' },
+  { key:'yahtzee',     label:'YAHTZEE',        desc:'All 5 same → 50 pts' },
+  { key:'chance',      label:'Chance',         desc:'Sum of all dice' },
+];
+
+const PLAYER_COLORS = ['#E9A800','#2D6A4F','#C0392B'];
+const PLAYER_LIGHT  = ['#FFF8DC','#E8F5E9','#FDECEA'];
+const PLAYER_NAMES_DEFAULT = ['Player 1','Player 2','Player 3'];
+
+// ─── SCORING LOGIC ───────────────────────────────────────────────────────────
+function getCounts(dice) {
+  const c = {};
+  dice.forEach(v => { c[v] = (c[v]||0)+1; });
+  return c;
+}
+function sumDice(dice) { return dice.reduce((a,b)=>a+b,0); }
+function hasSeq(dice, len) {
+  const uniq = [...new Set(dice)].sort((a,b)=>a-b);
+  for (let s=1; s<=7-len; s++) {
+    if ([...Array(len)].every((_,j)=>uniq.includes(s+j))) return true;
+  }
+  return false;
+}
+function scoreFor(key, dice) {
+  const c = getCounts(dice);
+  const vals = Object.values(c).sort((a,b)=>b-a);
+  const sum = sumDice(dice);
+  switch(key) {
+    case 'ones':   return dice.filter(v=>v===1).reduce((a,b)=>a+b,0);
+    case 'twos':   return dice.filter(v=>v===2).reduce((a,b)=>a+b,0);
+    case 'threes': return dice.filter(v=>v===3).reduce((a,b)=>a+b,0);
+    case 'fours':  return dice.filter(v=>v===4).reduce((a,b)=>a+b,0);
+    case 'fives':  return dice.filter(v=>v===5).reduce((a,b)=>a+b,0);
+    case 'sixes':  return dice.filter(v=>v===6).reduce((a,b)=>a+b,0);
+    case 'threeoak':  return vals[0]>=3 ? sum : 0;
+    case 'fouroak':   return vals[0]>=4 ? sum : 0;
+    case 'fullhouse': return (vals[0]===3&&vals[1]===2)||(vals[0]===5) ? 25 : 0;
+    case 'sstraight': return hasSeq(dice,4) ? 30 : 0;
+    case 'lstraight': return hasSeq(dice,5) ? 40 : 0;
+    case 'yahtzee':   return vals[0]===5 ? 50 : 0;
+    case 'chance':    return sum;
+    default: return 0;
+  }
+}
+function isYahtzee(dice) { return new Set(dice).size === 1; }
+function calcUpperTotal(scores) {
+  return UPPER_CATS.reduce((t,c)=>t+(scores[c.key]??0),0);
+}
+function calcUpperBonus(scores) {
+  return calcUpperTotal(scores) >= 63 ? 35 : 0;
+}
+function calcLowerTotal(scores) {
+  return LOWER_CATS.reduce((t,c)=>t+(scores[c.key]??0),0);
+}
+function calcGrandTotal(scores, yahtzeeBonus) {
+  return calcUpperTotal(scores) + calcUpperBonus(scores) + calcLowerTotal(scores) + (yahtzeeBonus||0)*100;
+}
+
+// ─── PROBABILITY HELPERS ─────────────────────────────────────────────────────
+function bestProbHint(dice, held) {
+  const freeDice = held.filter(h=>!h).length;
+  if (freeDice === 0) return null;
+  const heldVals = dice.filter((_,i)=>held[i]);
+  if (heldVals.length === 0) return null;
+  const c = getCounts(heldVals);
+  const top = Object.keys(c).sort((a,b)=>c[b]-c[a])[0];
+  const topCount = c[top];
+  const need = 5 - heldVals.length; // free dice = how many we still need
+  // Only show if making a meaningful run for something
+  if (topCount < 2) return null;
+  const denom = freeDice === 1 ? 6 : freeDice === 2 ? 36 : null;
+  if (!denom) return null;
+  let numer = 1;
+  // if we just need one specific number from n free dice, numer=1 for each
+  // for 1 die: 1/6 for specific; for 2 dice: 1/36 for two specific
+  const target = freeDice === 1
+    ? `rolling a ${top}`
+    : `rolling two ${top}s`;
+  const pct = (numer/denom*100).toFixed(0);
+  return { numer, denom, pct, target, topVal: top, topCount };
+}
+
+// ─── DIE COMPONENT ───────────────────────────────────────────────────────────
+function Die({ value, held, rolling, onClick, disabled, probMode, probHint, isKey }) {
+  const pattern = DOTS[value] || DOTS[1];
+  const bg   = held ? '#FFF8DC' : '#FFFFF8';
+  const bord = held ? '3px solid #E9A800' : '2.5px solid #2D6A4F';
+  const shad = held
+    ? '0 0 0 3px #E9A80055, 0 3px 8px rgba(0,0,0,0.15)'
+    : '0 2px 6px rgba(0,0,0,0.13)';
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
+      <div onClick={disabled?null:onClick} style={{
+        width:76, height:76, background:bg, border:bord, borderRadius:14,
+        display:'grid', gridTemplateColumns:'repeat(3,1fr)', gridTemplateRows:'repeat(3,1fr)',
+        padding:9, gap:4,
+        cursor: disabled ? 'default' : 'pointer',
+        boxShadow: shad,
+        animation: rolling ? 'dieRoll 0.35s ease' : 'none',
+        transition: 'border 0.12s, background 0.12s, box-shadow 0.12s',
+        opacity: disabled ? 0.5 : 1,
+        position:'relative',
+      }}>
+        {pattern.map((on,i) => (
+          <div key={i} style={{
+            width:'100%', height:'100%', borderRadius:'50%',
+            background: on ? '#1B4332' : 'transparent',
+            transition:'background 0.1s',
+          }}/>
+        ))}
+      </div>
+      <div style={{ fontSize:10, fontWeight:700, height:14, letterSpacing:1,
+        color: held ? '#C17B00' : 'transparent' }}>
+        {held ? 'HELD' : '·'}
+      </div>
+      {/* Probability hint on held die */}
+      {probMode && held && probHint && isKey && (
+        <div style={{ fontSize:11, fontWeight:700, color:'#1B4332',
+          background:'#E8F5E9', border:'1px solid #A5D6A7',
+          borderRadius:6, padding:'2px 6px', marginTop:-2 }}>
+          {probHint.numer}/{probHint.denom} ≈ {probHint.pct}%
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SCORE ROW ───────────────────────────────────────────────────────────────
+function ScoreRow({ cat, players, scores, yahtzeeBonus, currentPlayer, dice, rollNum, onScore, highlight }) {
+  const isScored = (pi) => scores[pi][cat.key] !== undefined;
+  const potential = (pi) => pi===currentPlayer && rollNum>0 ? scoreFor(cat.key, dice) : null;
+
+  return (
+    <tr style={{ borderBottom:'1px solid #E8E0D0' }}>
+      <td style={{ padding:'5px 8px', fontSize:12, color:'#444', fontWeight:600,
+        background: highlight ? '#FFFBF0' : '#FAFAF7',
+        borderRight:'1px solid #E0D8C8', minWidth:110 }}>
+        <div>{cat.label}</div>
+        <div style={{ fontSize:10, color:'#999', fontWeight:400 }}>{cat.desc}</div>
+      </td>
+      {players.map((_, pi) => {
+        const scored = isScored(pi);
+        const pot = potential(pi);
+        const isActive = pi===currentPlayer && rollNum>0 && !scored;
+        const val = scored ? scores[pi][cat.key] : pot;
+        const canScore = isActive && !scored;
+        return (
+          <td key={pi} onClick={canScore ? ()=>onScore(cat.key) : null}
+            style={{
+              padding:'6px 4px', textAlign:'center', fontSize:13, fontWeight:700,
+              width:64,
+              background: scored
+                ? (scores[pi][cat.key]===0 ? '#F5F5F5' : PLAYER_LIGHT[pi])
+                : canScore && pot>0 ? `${PLAYER_LIGHT[pi]}CC`
+                : canScore ? '#FFF5F5'
+                : 'transparent',
+              color: scored
+                ? (scores[pi][cat.key]===0 ? '#BBB' : PLAYER_COLORS[pi])
+                : canScore && pot>0 ? PLAYER_COLORS[pi]
+                : canScore ? '#DDD'
+                : '#CCC',
+              cursor: canScore ? 'pointer' : 'default',
+              borderRight: pi < players.length-1 ? '1px solid #E0D8C8' : 'none',
+              transition:'background 0.15s',
+              position:'relative',
+            }}>
+            {scored || (canScore && pot!==null)
+              ? (val===0&&!scored ? '—' : val)
+              : scored ? scores[pi][cat.key] : ''}
+            {canScore && pot>0 && <div style={{ fontSize:8, color:PLAYER_COLORS[pi], opacity:0.7 }}>tap</div>}
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
+// ─── SUBTOTAL ROW ─────────────────────────────────────────────────────────────
+function SubRow({ label, values, bold, accent, small }) {
+  return (
+    <tr style={{ borderBottom:'1px solid #D8D0C0', background: accent ? '#F4EDD0' : '#F0EDE5' }}>
+      <td style={{ padding:'4px 8px', fontSize: small?11:12, fontWeight: bold?700:500,
+        color: accent?'#7A5C00':'#555', borderRight:'1px solid #E0D8C8' }}>
+        {label}
+      </td>
+      {values.map((v,i) => (
+        <td key={i} style={{ textAlign:'center', fontSize: small?11:13,
+          fontWeight: bold?700:500, color: accent?'#7A5C00':PLAYER_COLORS[i],
+          borderRight: i<values.length-1?'1px solid #E0D8C8':'none', padding:'4px 0' }}>
+          {v}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
+// ─── SETUP SCREEN ─────────────────────────────────────────────────────────────
+function SetupScreen({ onStart }) {
+  const [count, setCount] = useState(2);
+  const [names, setNames] = useState([...PLAYER_NAMES_DEFAULT]);
+  return (
+    <div style={{ minHeight:'100vh', background:'#1B4332', display:'flex',
+      alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#FDF8EE', borderRadius:20, padding:36, maxWidth:420, width:'100%',
+        boxShadow:'0 8px 40px rgba(0,0,0,0.35)' }}>
+        <div style={{ textAlign:'center', marginBottom:28 }}>
+          <div style={{ fontSize:48, marginBottom:4 }}>🎲</div>
+          <h1 style={{ fontSize:28, fontWeight:900, color:'#1B4332', letterSpacing:-1 }}>Yahtzee</h1>
+          <div style={{ fontSize:13, color:'#888', marginTop:4 }}>Year 5 Probability Edition</div>
+        </div>
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'#1B4332', marginBottom:10 }}>
+            Number of players
+          </div>
+          <div style={{ display:'flex', gap:10 }}>
+            {[1,2,3].map(n => (
+              <button key={n} onClick={()=>setCount(n)} style={{
+                flex:1, padding:'12px 0', border:'2px solid',
+                borderColor: count===n ? '#1B4332' : '#DDD',
+                borderRadius:10, fontWeight:700, fontSize:16,
+                background: count===n ? '#1B4332' : 'white',
+                color: count===n ? 'white' : '#888',
+                cursor:'pointer', transition:'all 0.15s',
+              }}>{n}</button>
+            ))}
+          </div>
+        </div>
+        {[...Array(count)].map((_,i) => (
+          <div key={i} style={{ marginBottom:12 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:PLAYER_COLORS[i], marginBottom:4 }}>
+              Player {i+1} name
+            </div>
+            <input value={names[i]} onChange={e=>{
+              const n=[...names]; n[i]=e.target.value; setNames(n);
+            }} style={{
+              width:'100%', padding:'10px 12px', border:`2px solid ${PLAYER_COLORS[i]}44`,
+              borderRadius:9, fontSize:14, fontWeight:600, color:'#1B4332',
+              background:'white', outline:'none',
+              fontFamily:"'Segoe UI', Arial, sans-serif",
+            }}/>
+          </div>
+        ))}
+        <button onClick={()=>onStart(count, names.slice(0,count))} style={{
+          width:'100%', marginTop:16, padding:'14px 0',
+          background:'#1B4332', color:'white', border:'none',
+          borderRadius:12, fontSize:16, fontWeight:800, cursor:'pointer',
+          letterSpacing:0.5,
+        }}>
+          Start Game →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── WINNER SCREEN ────────────────────────────────────────────────────────────
+function WinnerScreen({ players, scores, yahtzeeBonus, onRestart }) {
+  const totals = players.map((_,i)=>calcGrandTotal(scores[i], yahtzeeBonus[i]));
+  const maxScore = Math.max(...totals);
+  const winIdx = totals.indexOf(maxScore);
+  return (
+    <div style={{ minHeight:'100vh', background:'#1B4332', display:'flex',
+      alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div style={{ background:'#FDF8EE', borderRadius:20, padding:36, maxWidth:440, width:'100%',
+        boxShadow:'0 8px 40px rgba(0,0,0,0.35)', textAlign:'center' }}>
+        <div style={{ fontSize:56, marginBottom:8 }}>🏆</div>
+        <h2 style={{ fontSize:26, fontWeight:900, color:'#1B4332', marginBottom:4 }}>
+          {players[winIdx]} wins!
+        </h2>
+        <div style={{ fontSize:32, fontWeight:800, color:PLAYER_COLORS[winIdx], marginBottom:24 }}>
+          {maxScore} pts
+        </div>
+        <div style={{ background:'#F4EDD0', borderRadius:12, padding:16, marginBottom:24 }}>
+          {players.map((name,i) => (
+            <div key={i} style={{ display:'flex', justifyContent:'space-between',
+              padding:'6px 0', borderBottom: i<players.length-1?'1px solid #E0D8C0':'none',
+              fontWeight: i===winIdx ? 800 : 500,
+              color: i===winIdx ? PLAYER_COLORS[i] : '#666',
+              fontSize: i===winIdx ? 16 : 14,
+            }}>
+              <span>{name}{i===winIdx?' 🏆':''}</span>
+              <span>{totals[i]} pts</span>
+            </div>
+          ))}
+        </div>
+        <button onClick={onRestart} style={{
+          width:'100%', padding:'13px 0', background:'#1B4332', color:'white',
+          border:'none', borderRadius:12, fontSize:15, fontWeight:800, cursor:'pointer',
+        }}>Play Again</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN GAME ────────────────────────────────────────────────────────────────
+function Game({ players, onRestart }) {
+  const numP = players.length;
+  const emptyScores = () => players.map(()=>({}));
+
+  const [dice, setDice]         = useState([1,2,3,4,5]);
+  const [held, setHeld]         = useState([false,false,false,false,false]);
+  const [rolling, setRolling]   = useState([false,false,false,false,false]);
+  const [rollNum, setRollNum]   = useState(0);
+  const [curPlayer, setCurP]    = useState(0);
+  const [scores, setScores]     = useState(emptyScores());
+  const [yahtzeeBonus, setYB]   = useState(players.map(()=>0));
+  const [probMode, setProbMode] = useState(false);
+  const [gameOver, setGameOver] = useState(false);
+  const [msg, setMsg]           = useState('');
+
+  const totalCats = UPPER_CATS.length + LOWER_CATS.length; // 13
+  const turnsDone = players.map((_,i)=>Object.keys(scores[i]).length);
+  const allDone   = turnsDone.every(t=>t>=totalCats);
+
+  useEffect(()=>{ if(allDone) setGameOver(true); },[allDone]);
+
+  const doRoll = useCallback(()=>{
+    if (rollNum>=3) return;
+    const r = held.map(h=>!h);
+    setRolling(r);
+    setTimeout(()=>{
+      setDice(prev=>prev.map((v,i)=>held[i]?v:Math.ceil(Math.random()*6)));
+      setRolling([false,false,false,false,false]);
+      setRollNum(prev=>prev+1);
+      setMsg('');
+    }, 360);
+  },[rollNum, held]);
+
+  const toggleHold = useCallback((i)=>{
+    if (rollNum===0 || rollNum>=3) return;
+    setHeld(prev=>{ const n=[...prev]; n[i]=!n[i]; return n; });
+  },[rollNum]);
+
+  const doScore = useCallback((key)=>{
+    if (rollNum===0) { setMsg('Roll the dice first!'); return; }
+    const newScores = scores.map(s=>({...s}));
+    let val = scoreFor(key, dice);
+
+    // Yahtzee joker rules
+    const isY = isYahtzee(dice);
+    if (isY && scores[curPlayer]['yahtzee']===50) {
+      // extra yahtzee bonus
+      const nb = [...yahtzeeBonus]; nb[curPlayer]++; setYB(nb);
+      setMsg('🎉 Yahtzee Bonus! +100 pts');
+      // Joker: if corresponding upper cat filled, can use lower freely
+    }
+
+    newScores[curPlayer][key] = val;
+    setScores(newScores);
+
+    // Advance turn
+    const nextP = (curPlayer+1) % numP;
+    setCurP(nextP);
+    setDice([1,2,3,4,5]);
+    setHeld([false,false,false,false,false]);
+    setRollNum(0);
+    if (!msg) setMsg('');
+  },[rollNum, scores, curPlayer, dice, yahtzeeBonus, numP, msg]);
+
+  const probHint = probMode ? bestProbHint(dice, held) : null;
+
+  if (gameOver) {
+    return <WinnerScreen players={players} scores={scores} yahtzeeBonus={yahtzeeBonus} onRestart={onRestart}/>;
+  }
+
+  // Build scorecard totals per player
+  const upperTotals  = players.map((_,i)=>calcUpperTotal(scores[i]));
+  const upperBonuses = players.map((_,i)=>calcUpperBonus(scores[i]));
+  const lowerTotals  = players.map((_,i)=>calcLowerTotal(scores[i]));
+  const yBonusPts    = yahtzeeBonus.map(b=>b*100);
+  const grandTotals  = players.map((_,i)=>calcGrandTotal(scores[i], yahtzeeBonus[i]));
+  const upperProg    = players.map((_,i)=>Math.min(upperTotals[i],63));
+
+  return (
+    <div style={{ background:'#1B4332', minHeight:'100vh', fontFamily:"'Segoe UI',Arial,sans-serif" }}>
+      <style>{`
+        @keyframes dieRoll {
+          0%{transform:rotate(0) scale(1)} 25%{transform:rotate(-14deg) scale(1.08)}
+          65%{transform:rotate(10deg) scale(0.94)} 100%{transform:rotate(0) scale(1)}
+        }
+        tr:hover td { filter: brightness(0.97); }
+      `}</style>
+
+      {/* ── HEADER ── */}
+      <div style={{ background:'#153828', padding:'10px 16px',
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        borderBottom:'2px solid #0D2419' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:22 }}>🎲</span>
+          <div>
+            <div style={{ color:'#FDF8EE', fontWeight:900, fontSize:17, letterSpacing:-0.5 }}>Yahtzee</div>
+            <div style={{ color:'#8FAF95', fontSize:10 }}>Year 5 · Little River Primary</div>
+          </div>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          {/* Prob mode toggle */}
+          <button onClick={()=>setProbMode(p=>!p)} style={{
+            background: probMode ? '#E9A800' : '#2D6A4F',
+            color: probMode ? '#1A1A1A' : '#A5D6A7',
+            border:'none', borderRadius:20, padding:'5px 12px',
+            fontSize:11, fontWeight:700, cursor:'pointer',
+            transition:'all 0.2s',
+          }}>
+            {probMode ? '📐 Probability ON' : '📐 Probability OFF'}
+          </button>
+          <button onClick={onRestart} style={{
+            background:'transparent', color:'#8FAF95', border:'1px solid #2D6A4F',
+            borderRadius:8, padding:'5px 10px', fontSize:11, fontWeight:600, cursor:'pointer',
+          }}>New Game</button>
+        </div>
+      </div>
+
+      <div style={{ maxWidth:900, margin:'0 auto', padding:'12px 12px 24px' }}>
+
+        {/* ── TURN BANNER ── */}
+        <div style={{ background: PLAYER_COLORS[curPlayer], borderRadius:10, padding:'10px 16px',
+          marginBottom:12, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div>
+            <span style={{ color:'white', fontWeight:900, fontSize:16 }}>
+              {players[curPlayer]}'s Turn
+            </span>
+            <span style={{ color:'rgba(255,255,255,0.7)', fontSize:12, marginLeft:10 }}>
+              Roll {rollNum}/3
+            </span>
+          </div>
+          <div style={{ display:'flex', gap:6 }}>
+            {[1,2,3].map(n=>(
+              <div key={n} style={{
+                width:10, height:10, borderRadius:'50%',
+                background: rollNum>=n ? 'white' : 'rgba(255,255,255,0.3)',
+              }}/>
+            ))}
+          </div>
+        </div>
+
+        {msg && (
+          <div style={{ background:'#FFF9C4', border:'1px solid #F9A825', borderRadius:8,
+            padding:'8px 14px', marginBottom:10, fontSize:13, fontWeight:600, color:'#7A5C00' }}>
+            {msg}
+          </div>
+        )}
+
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
+
+          {/* ── DICE PANEL ── */}
+          <div style={{ background:'#FDF8EE', borderRadius:14, padding:'16px 14px',
+            boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontWeight:700, color:'#1B4332', fontSize:13, marginBottom:12,
+              borderBottom:'1px solid #E8E0D0', paddingBottom:8,
+              display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>Dice</span>
+              {rollNum>0 && rollNum<3 && (
+                <span style={{ fontSize:11, color:'#888', fontWeight:400 }}>
+                  Click dice to hold
+                </span>
+              )}
+            </div>
+
+            <div style={{ display:'flex', gap:10, justifyContent:'center', marginBottom:14, flexWrap:'wrap' }}>
+              {dice.map((v,i)=>(
+                <Die key={i} value={v} held={held[i]} rolling={rolling[i]}
+                  onClick={()=>toggleHold(i)}
+                  disabled={rollNum===0||rollNum>=3}
+                  probMode={probMode}
+                  probHint={probHint}
+                  isKey={probHint && String(v)===String(probHint.topVal) && held[i]}
+                />
+              ))}
+            </div>
+
+            {/* Prob mode hint bar */}
+            {probMode && rollNum>0 && rollNum<3 && (
+              <div style={{ background:'#E8F5E9', border:'1px solid #A5D6A7', borderRadius:8,
+                padding:'7px 10px', marginBottom:10, fontSize:11, color:'#1B4332' }}>
+                {probHint ? (
+                  <span>
+                    Aiming for <strong>{probHint.topCount}×{probHint.topVal}</strong> → need {probHint.target} &nbsp;
+                    <strong style={{ fontSize:13 }}>{probHint.numer}/{probHint.denom}</strong>
+                    <span style={{ color:'#555' }}> ≈ {probHint.pct}% chance</span>
+                  </span>
+                ) : (
+                  <span style={{ color:'#888' }}>Hold 2+ of the same number to see probability</span>
+                )}
+              </div>
+            )}
+
+            <div style={{ display:'flex', gap:8, justifyContent:'center', flexWrap:'wrap' }}>
+              <button onClick={doRoll} disabled={rollNum>=3}
+                style={{ background:rollNum>=3?'#CCC':'#1B4332', color:'white',
+                  border:'none', borderRadius:10, padding:'11px 28px',
+                  fontWeight:800, fontSize:14, cursor:rollNum>=3?'not-allowed':'pointer',
+                  boxShadow: rollNum>=3?'none':'0 2px 8px rgba(27,67,50,0.35)',
+                }}>
+                {rollNum===0 ? '🎲 Roll!' : rollNum>=3 ? '✓ Choose a score' : `🎲 Roll Again (${3-rollNum} left)`}
+              </button>
+              {rollNum>0 && rollNum<3 && (
+                <button onClick={()=>setHeld([true,true,true,true,true])}
+                  style={{ background:'#F4EDD0', color:'#7A5C00', border:'1px solid #E9A800',
+                    borderRadius:10, padding:'11px 14px', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+                  Hold All
+                </button>
+              )}
+            </div>
+
+            {rollNum===3 && (
+              <div style={{ marginTop:10, textAlign:'center', fontSize:12, color:'#888', fontStyle:'italic' }}>
+                Click a score row in the card to record your score →
+              </div>
+            )}
+          </div>
+
+          {/* ── UPPER SECTION PROGRESS ── */}
+          <div style={{ background:'#FDF8EE', borderRadius:14, padding:'16px 14px',
+            boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontWeight:700, color:'#1B4332', fontSize:13, marginBottom:12,
+              borderBottom:'1px solid #E8E0D0', paddingBottom:8 }}>
+              Upper Bonus Progress
+              <span style={{ fontSize:10, fontWeight:400, color:'#888', marginLeft:6 }}>
+                (need 63 for +35 bonus)
+              </span>
+            </div>
+            {players.map((name,i)=>(
+              <div key={i} style={{ marginBottom:12 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:12,
+                  marginBottom:4, fontWeight:600, color: i===curPlayer?PLAYER_COLORS[i]:'#888' }}>
+                  <span>{name}</span>
+                  <span>{upperTotals[i]}/63 {upperBonuses[i]>0?'✓ +35':''}</span>
+                </div>
+                <div style={{ background:'#E8E0D0', borderRadius:20, height:10, overflow:'hidden' }}>
+                  <div style={{
+                    width:`${Math.min(upperTotals[i]/63*100,100)}%`,
+                    height:'100%', borderRadius:20,
+                    background: upperBonuses[i]>0 ? '#E9A800' : PLAYER_COLORS[i],
+                    transition:'width 0.5s ease',
+                  }}/>
+                </div>
+              </div>
+            ))}
+
+            <div style={{ borderTop:'1px solid #E8E0D0', paddingTop:12, marginTop:4 }}>
+              <div style={{ fontWeight:700, color:'#1B4332', fontSize:12, marginBottom:8 }}>
+                Grand Total
+              </div>
+              {players.map((name,i)=>(
+                <div key={i} style={{ display:'flex', justifyContent:'space-between',
+                  padding:'4px 0', fontSize:13,
+                  fontWeight: i===curPlayer?800:500,
+                  color: i===curPlayer?PLAYER_COLORS[i]:'#888',
+                  borderBottom: i<numP-1?'1px solid #F0E8D8':'none' }}>
+                  <span>{name}</span>
+                  <span style={{ fontWeight:800 }}>{grandTotals[i]}</span>
+                </div>
+              ))}
+              {yahtzeeBonus.some(b=>b>0) && (
+                <div style={{ fontSize:11, color:'#888', marginTop:6, fontStyle:'italic' }}>
+                  Includes Yahtzee bonus ({yahtzeeBonus.map((b,i)=>`${players[i]}: +${b*100}`).join(', ')})
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── SCORECARD ── */}
+        <div style={{ background:'#FDF8EE', borderRadius:14, overflow:'hidden',
+          boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
+
+          {/* Player header */}
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead>
+              <tr style={{ background:'#1B4332' }}>
+                <th style={{ padding:'8px', textAlign:'left', color:'#8FAF95',
+                  fontSize:11, fontWeight:600, minWidth:120, borderRight:'1px solid #2D6A4F' }}>
+                  CATEGORY
+                </th>
+                {players.map((name,i)=>(
+                  <th key={i} style={{ padding:'8px', textAlign:'center',
+                    background: i===curPlayer ? PLAYER_COLORS[i]+'33' : 'transparent',
+                    color: PLAYER_COLORS[i], fontSize:12, fontWeight:800, width:64,
+                    borderRight: i<numP-1?'1px solid #2D6A4F':'none',
+                    borderBottom: i===curPlayer?`3px solid ${PLAYER_COLORS[i]}`:'3px solid transparent',
+                  }}>
+                    {name}
+                    {i===curPlayer && <div style={{ fontSize:9, opacity:0.8 }}>▲ active</div>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {/* Upper section label */}
+              <tr style={{ background:'#F0EDE5' }}>
+                <td colSpan={numP+1} style={{ padding:'4px 8px', fontSize:10,
+                  fontWeight:800, color:'#999', letterSpacing:1, textTransform:'uppercase' }}>
+                  Upper Section
+                </td>
+              </tr>
+              {UPPER_CATS.map(cat=>(
+                <ScoreRow key={cat.key} cat={cat} players={players}
+                  scores={scores} yahtzeeBonus={yahtzeeBonus}
+                  currentPlayer={curPlayer} dice={dice} rollNum={rollNum}
+                  onScore={doScore}
+                  highlight={rollNum>0 && scoreFor(cat.key,dice)>0 && scores[curPlayer][cat.key]===undefined}
+                />
+              ))}
+              <SubRow label="Upper Total" values={upperTotals} bold />
+              <SubRow label="Bonus (+35 if ≥63)" values={upperBonuses} accent
+                bold />
+
+              {/* Lower section label */}
+              <tr style={{ background:'#F0EDE5' }}>
+                <td colSpan={numP+1} style={{ padding:'4px 8px', fontSize:10,
+                  fontWeight:800, color:'#999', letterSpacing:1, textTransform:'uppercase' }}>
+                  Lower Section
+                </td>
+              </tr>
+              {LOWER_CATS.map(cat=>(
+                <ScoreRow key={cat.key} cat={cat} players={players}
+                  scores={scores} yahtzeeBonus={yahtzeeBonus}
+                  currentPlayer={curPlayer} dice={dice} rollNum={rollNum}
+                  onScore={doScore}
+                  highlight={rollNum>0 && scoreFor(cat.key,dice)>0 && scores[curPlayer][cat.key]===undefined}
+                />
+              ))}
+              {yahtzeeBonus.some(b=>b>0) && (
+                <SubRow label="Yahtzee Bonus" values={yBonusPts} small accent />
+              )}
+              <SubRow label="Lower Total" values={lowerTotals} bold />
+              <SubRow label="GRAND TOTAL" values={grandTotals} bold accent />
+            </tbody>
+          </table>
+        </div>
+
+        {/* Rules reminder */}
+        <div style={{ marginTop:12, background:'#0D2419', borderRadius:10, padding:'10px 14px',
+          display:'flex', gap:16, flexWrap:'wrap' }}>
+          {[
+            ['Full House','25 pts'],['Sm. Straight','30 pts'],
+            ['Lg. Straight','40 pts'],['Yahtzee','50 pts'],
+            ['Upper Bonus','35 pts if upper ≥ 63'],
+          ].map(([k,v])=>(
+            <div key={k} style={{ fontSize:10, color:'#8FAF95' }}>
+              <strong style={{ color:'#A5D6A7' }}>{k}</strong> = {v}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [setup, setSetup] = useState(true);
+  const [players, setPlayers] = useState([]);
+
+  if (setup) {
+    return <SetupScreen onStart={(count, names)=>{ setPlayers(names); setSetup(false); }}/>;
+  }
+  return <Game players={players} onRestart={()=>setSetup(true)}/>;
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
